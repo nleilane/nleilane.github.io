@@ -1143,6 +1143,7 @@
     <button class="btn-upload" onclick="openModal()">
       ✏️ Inserir Avaliação
     </button>
+    <span id="syncStatus" style="font-size:11px; color:var(--text-dim);">🔄 Sincronizando...</span>
   </div>
 </header>
 
@@ -1370,6 +1371,9 @@
 
     <div class="modal-footer">
       <button class="btn-cancel" onclick="closeModal()">Fechar</button>
+      <button onclick="syncToGoogleSheets()" style="background:var(--ra-green); color:white; border:none; padding:8px 16px; border-radius:8px; cursor:pointer;">
+  🔄 Sincronizar com Google Sheets
+</button>
     </div>
   </div>
 </div>
