@@ -1375,65 +1375,133 @@
 </div>
 
 <script>
-// ── DATA STORE ──────────────────────────────────────────────────────────────
-const MONTHS = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-                'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+// ── CONFIGURAÇÃO DA API ──────────────────────────────────────────────────────
+const API_URL = 'https://script.google.com/macros/s/AKfycbyT4qVov5tueCwYd5ShBp5KtAjia8NT1cdWC8f3hXAbDZo64TpyHer_Ss-n0dfYZigJ/exec'; // COLOQUE SUA URL AQUI
 
-const REP_COLORS = {
-  'SELO RA 1000':    '#7c3aed',
-  'ÓTIMO':           '#00a859',
-  'BOM':             '#65a30d',
-  'REGULAR':         '#d97706',
-  'RUIM':            '#dc2626',
-  'NÃO RECOMENDADA':'#991b1b',
-  'SEM REPUTAÇÃO':   '#475569',
-};
+// ── FUNÇÕES DE SINCRONIA COM GOOGLE SHEETS ────────────────────────────────────
 
-// data[mes] = { avaliacoes: [{resolvido, negocio, nota},...], ir: number, ...computed }
-let data = JSON.parse(localStorage.getItem('ra_dashboard_v2') || '{}');
-// ids = [{id, date, status}]
-let ids  = JSON.parse(localStorage.getItem('ra_ids_v2') || '[]');
+// Salvar todas as avaliações
+async function syncToGoogleSheets() {
+  try {
+    // Preparar dados das avaliações
+    const avaliacoesData = [];
+    for (const [mes, dados] of Object.entries(data)) {
+      if (dados.avaliacoes) {
+        dados.avaliacoes.forEach(av => {
+          avaliacoesData.push({
+            mes: mes,
+            data: new Date().toISOString().split('T')[0],
+            nota: av.nota,
+            resolvido: av.resolvido,
+            voltaria: av.negocio,
+            ir: dados.ir || 100
+          });
+        });
+      }
+    }
 
-let arChart = null;
-let currentChartType = 'line';
-let activeMonthTab = null;
+    // Salvar cada avaliação individualmente
+    for (const av of avaliacoesData) {
+      const response = await fetch(`${API_URL}?action=save`, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `data=${encodeURIComponent(JSON.stringify(av))}`
+      });
+    }
 
-// Estado do modal
-let modalAvaliacoes = [];
-let selectedNota = null;
-let selectedResolvido = null;
-let selectedNegocio = null;
-let currentModalMonth = null;
+    // Salvar IDs de reenvio
+    for (const idObj of ids) {
+      const response = await fetch(`${API_URL}?action=updateId`, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `data=${encodeURIComponent(JSON.stringify(idObj))}`
+      });
+    }
 
-// ── CALC FUNCTIONS ──────────────────────────────────────────────────────────
-function calcAR(ir, ma, is_, in_) {
-  return ((ir * 2) + (ma * 10 * 3) + (is_ * 3) + (in_ * 2)) / 100;
+    console.log('✅ Dados sincronizados com Google Sheets!');
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao sincronizar:', error);
+    return false;
+  }
 }
 
-function getReputacao(qtd, ir, ar) {
-  if (qtd < 10) return 'SEM REPUTAÇÃO';
-  if (ir < 50)  return 'NÃO RECOMENDADA';
-  if (ar >= 8.4) return 'SELO RA 1000';
-  if (ar >= 8)   return 'ÓTIMO';
-  if (ar >= 7)   return 'BOM';
-  if (ar >= 6)   return 'REGULAR';
-  if (ar >= 5)   return 'RUIM';
-  return 'NÃO RECOMENDADA';
+// Carregar dados do Google Sheets
+async function loadFromGoogleSheets() {
+  try {
+    // Carregar avaliações
+    const responseAv = await fetch(`${API_URL}?action=load&sheet=Avaliacoes`);
+    const resultAv = await responseAv.json();
+    
+    if (resultAv.success && resultAv.data) {
+      // Converter dados do Google Sheets para o formato do app
+      const newData = {};
+      resultAv.data.forEach(row => {
+        const mes = row.Mes;
+        if (!newData[mes]) {
+          newData[mes] = {
+            avaliacoes: [],
+            ir: parseInt(row.IR) || 100
+          };
+        }
+        newData[mes].avaliacoes.push({
+          nota: parseInt(row.Nota),
+          resolvido: row.Resolvido,
+          negocio: row.Voltaria
+        });
+      });
+      
+      // Recalcular métricas
+      for (const [mes, dados] of Object.entries(newData)) {
+        if (dados.avaliacoes.length > 0) {
+          const computed = computeFromAvaliacoes(dados.avaliacoes, dados.ir);
+          if (computed) {
+            newData[mes] = computed;
+          }
+        }
+      }
+      
+      data = newData;
+    }
+
+    // Carregar IDs
+    const responseIds = await fetch(`${API_URL}?action=loadIds&sheet=Reenvios`);
+    const resultIds = await responseIds.json();
+    
+    if (resultIds.success && resultIds.data) {
+      ids = resultIds.data.map(row => ({
+        id: row.ID,
+        date: row.Data,
+        status: row.Status || 'pendente',
+        resultado: row.Resultado || null
+      }));
+    }
+
+    // Salvar no localStorage como backup
+    localStorage.setItem('ra_dashboard_v2', JSON.stringify(data));
+    localStorage.setItem('ra_ids_v2', JSON.stringify(ids));
+
+    console.log('✅ Dados carregados do Google Sheets!');
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao carregar:', error);
+    // Fallback para localStorage
+    data = JSON.parse(localStorage.getItem('ra_dashboard_v2') || '{}');
+    ids = JSON.parse(localStorage.getItem('ra_ids_v2') || '[]');
+    return false;
+  }
 }
 
-function computeFromAvaliacoes(avaliacoes, ir) {
-  const qtd = avaliacoes.length;
-  if (qtd === 0) return null;
-  const ma  = avaliacoes.reduce((s, a) => s + a.nota, 0) / qtd;
-  const is_ = avaliacoes.filter(a => a.resolvido === 'Sim').length / qtd * 100;
-  const in_ = avaliacoes.filter(a => a.negocio  === 'Sim').length / qtd * 100;
-  const ar  = calcAR(ir, ma, is_, in_);
-  const rep = getReputacao(qtd, ir, ar);
-  return { qtd, ir, ma, is: is_, in: in_, ar, rep, avaliacoes };
-}
+// ── MODIFICAR FUNÇÕES EXISTENTES ──────────────────────────────────────────────
 
-// ── PERSIST & REFRESH HELPER ─────────────────────────────────────────────────
-function persistAndRefresh(month) {
+// Substituir persistAndRefresh original
+async function persistAndRefresh(month) {
   const ir = data[month]?.ir || 100;
   const computed = computeFromAvaliacoes(modalAvaliacoes, ir);
   if (computed) {
@@ -1441,537 +1509,22 @@ function persistAndRefresh(month) {
   } else {
     delete data[month];
   }
+  
+  // Salvar no localStorage
   localStorage.setItem('ra_dashboard_v2', JSON.stringify(data));
+  
+  // Sincronizar com Google Sheets (em background)
+  syncToGoogleSheets();
+  
   refresh(month);
 }
 
-// ── MODAL ────────────────────────────────────────────────────────────────────
-function openModal(month) {
-  modalAvaliacoes = [];
-  selectedNota = null;
-  selectedResolvido = null;
-  selectedNegocio = null;
-  currentModalMonth = null;
-
-  buildNotaBtns();
-  clearRadios('radioResolvido');
-  clearRadios('radioNegocio');
-  renderAvList();
-
-  document.getElementById('modalOverlay').classList.add('open');
-  if (month) {
-    document.getElementById('modalMonth').value = month;
-    onMonthChange();
-  } else {
-    document.getElementById('modalMonth').value = '';
-  }
-}
-
-function onMonthChange() {
-  const month = document.getElementById('modalMonth').value;
-  if (!month) { currentModalMonth = null; return; }
-  currentModalMonth = month;
-  // Carrega avaliações existentes do mês
-  if (data[month] && data[month].avaliacoes) {
-    modalAvaliacoes = [...data[month].avaliacoes];
-  } else {
-    modalAvaliacoes = [];
-  }
-  renderAvList();
-}
-
-function closeModal() {
-  document.getElementById('modalOverlay').classList.remove('open');
-}
-
-// ── NOTA BUTTONS (0–10) ──────────────────────────────────────────────────────
-function buildNotaBtns() {
-  const row = document.getElementById('notaBtns');
-  row.innerHTML = '';
-  for (let i = 0; i <= 10; i++) {
-    const btn = document.createElement('button');
-    btn.className = 'nota-btn';
-    btn.textContent = i;
-    btn.id = `nota-btn-${i}`;
-    btn.onclick = () => selectNota(i);
-    row.appendChild(btn);
-  }
-}
-
-function notaClass(n) {
-  if (n <= 4) return 'nota-ruim';
-  if (n <= 6) return 'nota-med';
-  if (n <= 8) return 'nota-bom';
-  return 'nota-otimo';
-}
-
-function selectNota(n) {
-  selectedNota = n;
-  for (let i = 0; i <= 10; i++) {
-    const btn = document.getElementById(`nota-btn-${i}`);
-    btn.classList.remove('active-nota', 'nota-ruim', 'nota-med', 'nota-bom', 'nota-otimo');
-    if (i === n) btn.classList.add('active-nota', notaClass(n));
-  }
-}
-
-// ── RADIO ────────────────────────────────────────────────────────────────────
-function selectRadio(field, value, el) {
-  const containerId = field === 'resolvido' ? 'radioResolvido' : 'radioNegocio';
-  const container = document.getElementById(containerId);
-  container.querySelectorAll('.radio-opt').forEach(o => {
-    o.classList.remove('selected-sim', 'selected-nao');
-  });
-  el.classList.add(value === 'Sim' ? 'selected-sim' : 'selected-nao');
-
-  if (field === 'resolvido') selectedResolvido = value;
-  else selectedNegocio = value;
-}
-
-function clearRadios(containerId) {
-  document.getElementById(containerId).querySelectorAll('.radio-opt')
-    .forEach(o => o.classList.remove('selected-sim', 'selected-nao'));
-}
-
-// ── ADD AVALIAÇÃO ─────────────────────────────────────────────────────────────
-function addAvaliacao() {
-  if (!currentModalMonth) {
-    alert('Selecione o mês primeiro!');
-    return;
-  }
-  if (selectedNota === null || !selectedResolvido || !selectedNegocio) {
-    alert('Preencha nota, problema resolvido e voltaria a fazer negócio!');
-    return;
-  }
-
-  modalAvaliacoes.push({
-    resolvido: selectedResolvido,
-    negocio:   selectedNegocio,
-    nota:      selectedNota
-  });
-
-  // Reset form
-  selectedNota = null;
-  selectedResolvido = null;
-  selectedNegocio = null;
-  buildNotaBtns();
-  clearRadios('radioResolvido');
-  clearRadios('radioNegocio');
-
-  renderAvList();
-
-  // ── AUTO-SAVE: salva e atualiza o dashboard imediatamente ──
-  persistAndRefresh(currentModalMonth);
-
-  // Feedback visual no botão
-  const btn = document.getElementById('btnAddAv');
-  btn.textContent = '✓ Avaliação salva!';
-  btn.style.background = 'var(--ra-green)';
-  btn.style.color = 'white';
-  btn.style.borderColor = 'var(--ra-green)';
-  setTimeout(() => {
-    btn.textContent = '+ Adicionar esta avaliação';
-    btn.style.background = '';
-    btn.style.color = '';
-    btn.style.borderColor = '';
-  }, 1500);
-}
-
-function removeAvaliacao(idx) {
-  modalAvaliacoes.splice(idx, 1);
-  renderAvList();
-  if (currentModalMonth) persistAndRefresh(currentModalMonth);
-}
-
-function renderAvList() {
-  const list = document.getElementById('avList');
-  const badge = document.getElementById('avCountBadge');
-  badge.textContent = modalAvaliacoes.length;
-
-  if (modalAvaliacoes.length === 0) {
-    list.innerHTML = '<div class="empty-av">Nenhuma avaliação adicionada ainda</div>';
-    return;
-  }
-
-  list.innerHTML = '';
-  modalAvaliacoes.forEach((av, i) => {
-    const notaColor = av.nota >= 8 ? '#00a859' : av.nota >= 6 ? '#d97706' : '#dc2626';
-    const div = document.createElement('div');
-    div.className = 'av-item';
-    div.innerHTML = `
-      <span class="av-item-num">#${i+1}</span>
-      <span class="av-nota" style="color:${notaColor}">${av.nota}</span>
-      <div class="av-chips">
-        <span class="av-chip ${av.resolvido==='Sim'?'chip-sim':'chip-nao'}">
-          ${av.resolvido==='Sim'?'✓':'✗'} Resolvido
-        </span>
-        <span class="av-chip ${av.negocio==='Sim'?'chip-sim':'chip-nao'}">
-          ${av.negocio==='Sim'?'✓':'✗'} Voltaria
-        </span>
-      </div>
-      <button class="av-del" onclick="removeAvaliacao(${i})" title="Remover">✕</button>`;
-    list.appendChild(div);
-  });
-
-  // Auto-scroll
-  list.scrollTop = list.scrollHeight;
-}
-
-// ── CHART ─────────────────────────────────────────────────────────────────────
-function buildChart() {
-  const ctx = document.getElementById('arChart').getContext('2d');
-  const labels = MONTHS.map(m => m.substring(0,3));
-  const values = MONTHS.map(m => data[m] ? parseFloat(data[m].ar.toFixed(2)) : null);
-
-  const barColors = values.map(v => {
-    if (v === null) return 'rgba(46,50,82,0.5)';
-    if (v >= 8.4) return '#7c3aed';
-    if (v >= 8)   return '#00a859';
-    if (v >= 7)   return '#65a30d';
-    if (v >= 6)   return '#d97706';
-    if (v >= 5)   return '#dc2626';
-    return '#991b1b';
-  });
-
-  const config = {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        label: 'AR',
-        data: values,
-        backgroundColor: barColors,
-        borderRadius: 8,
-        borderSkipped: false,
-        barPercentage: 0.65,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: '#1c1f35',
-          borderColor: '#2e3252',
-          borderWidth: 1,
-          titleColor: '#e8eaf6',
-          bodyColor: '#8890b8',
-          padding: 14,
-          callbacks: {
-            title: ctx => MONTHS[ctx[0].dataIndex],
-            label: ctx => {
-              if (ctx.raw === null) return ' Sem dados';
-              const m = MONTHS[ctx.dataIndex];
-              const d = data[m];
-              return [
-                ` AR: ${ctx.raw.toFixed(2)}`,
-                ` Reputação: ${d?.rep || '—'}`,
-                ` Avaliações: ${d?.qtd || 0}`,
-                ` MA: ${d?.ma?.toFixed(2) || '—'}`,
-              ];
-            }
-          }
-        },
-      },
-      scales: {
-        x: {
-          grid: { color: 'rgba(46,50,82,0.6)', drawBorder: false },
-          ticks: { color: '#8890b8', font: { size: 12, family: 'Inter' } },
-          border: { display: false }
-        },
-        y: {
-          min: 0, max: 10,
-          grid: { color: 'rgba(46,50,82,0.6)', drawBorder: false },
-          ticks: {
-            color: '#8890b8', stepSize: 2,
-            font: { size: 12, family: 'Inter' },
-            callback: v => v.toFixed(0)
-          },
-          border: { display: false }
-        }
-      },
-      onClick: (e, elements) => {
-        if (elements.length > 0) {
-          const idx = elements[0].index;
-          selectMonth(MONTHS[idx]);
-        }
-      }
-    }
-  };
-
-  if (arChart) arChart.destroy();
-  arChart = new Chart(ctx, config);
-}
-
-// ── KPI UPDATE ───────────────────────────────────────────────────────────────
-function updateKPIs() {
-  const entries = MONTHS.filter(m => data[m] && data[m].qtd > 0);
-
-  if (entries.length === 0) {
-    document.getElementById('kpi-best-ar').textContent = '—';
-    document.getElementById('kpi-best-month').textContent = 'sem dados';
-    const badge = document.getElementById('kpi-best-rep-badge');
-    badge.textContent = 'SEM DADOS';
-    badge.style.background = '#2e3252';
-    badge.style.color = '#8890b8';
-    document.getElementById('kpi-best-rep-month').textContent = 'no melhor mês registrado';
-    document.getElementById('kpi-avg-ar').textContent = '—';
-    document.getElementById('kpi-months-badge').textContent = '0 meses';
-    document.getElementById('kpi-total-av').textContent = '0';
-    return;
-  }
-
-  const bestMonth = entries.reduce((a, b) => data[a].ar > data[b].ar ? a : b);
-  const bestAR = data[bestMonth].ar;
-  const avgAR  = entries.reduce((s, m) => s + data[m].ar, 0) / entries.length;
-  const totalAv = entries.reduce((s, m) => s + (data[m].qtd || 0), 0);
-
-  animateNumber('kpi-best-ar', bestAR, 2);
-  document.getElementById('kpi-best-month').textContent = bestMonth;
-  // Badge colorido de reputação
-  const repBadge = document.getElementById('kpi-best-rep-badge');
-  const repName  = data[bestMonth].rep;
-  const repColor = REP_COLORS[repName] || '#475569';
-  repBadge.textContent = repName;
-  repBadge.style.background = repColor;
-  repBadge.style.color = ['REGULAR','BOM'].includes(repName) ? '#111' : '#fff';
-  document.getElementById('kpi-best-rep-month').textContent = `em ${bestMonth}`;
-  animateNumber('kpi-avg-ar', avgAR, 2);
-  document.getElementById('kpi-months-badge').textContent = `${entries.length} meses`;
-  animateNumber('kpi-total-av', totalAv, 0);
-}
-
-function animateNumber(id, target, decimals) {
-  const el = document.getElementById(id);
-  const start = parseFloat(el.textContent) || 0;
-  const duration = 600;
-  const startTime = performance.now();
-
-  function update(now) {
-    const progress = Math.min((now - startTime) / duration, 1);
-    const ease = 1 - Math.pow(1 - progress, 3);
-    const current = start + (target - start) * ease;
-    el.textContent = decimals > 0 ? current.toFixed(decimals) : Math.round(current);
-    if (progress < 1) requestAnimationFrame(update);
-  }
-  requestAnimationFrame(update);
-}
-
-// ── METAS DE REPUTAÇÃO ────────────────────────────────────────────────────────
-function updateMetas() {
-  const container = document.getElementById('metaList');
-
-  // Pega o mês com mais dados (ou mês ativo)
-  const entries = MONTHS.filter(m => data[m] && data[m].qtd > 0);
-  if (entries.length === 0) {
-    container.innerHTML = `<div class="empty-state" style="padding:20px"><div class="icon" style="font-size:24px">📊</div><p style="font-size:12px">Insira avaliações para ver as metas</p></div>`;
-    return;
-  }
-
-  // Usa o mês com o AR mais recente (última entrada com dados)
-  const refMonth = activeMonthTab && data[activeMonthTab]
-    ? activeMonthTab
-    : entries[entries.length - 1];
-
-  const d = data[refMonth];
-  const qtd = d.qtd;
-  const ar  = d.ar;
-  const ir  = d.ir;
-
-  // Fórmula: avaliações perfeitas (MA=10, IS=100, IN=100) necessárias
-  // AR_novo = ((ir*2) + ((ma_novo*10*3) + (is_novo*3) + (in_novo*2))) / 100
-  // Com nota 10/Sim/Sim: cada av perfeita contribui com nota 10, resolvido=sim, negocio=sim
-  function avsParaChegar(target) {
-    if (ar >= target) return 0;
-    // Nova média após N avaliações perfeitas
-    // ma_novo = (qtd*d.ma + N*10)/(qtd+N)
-    // is_novo = (qtd*(d.is/100) + N)/(qtd+N)*100
-    // in_novo = (qtd*(d.in/100) + N)/(qtd+N)*100
-    for (let n = 1; n <= 500; n++) {
-      const tot = qtd + n;
-      const ma_n = (qtd * d.ma + n * 10) / tot;
-      const is_n = (qtd * (d.is / 100) + n) / tot * 100;
-      const in_n = (qtd * (d.in / 100) + n) / tot * 100;
-      const ar_n = calcAR(ir, ma_n, is_n, in_n);
-      if (ar_n >= target) return n;
-    }
-    return '500+';
-  }
-
-  const metas = [
-    { label: 'SELO RA 1000', target: 8.4, color: '#7c3aed' },
-    { label: 'ÓTIMO',        target: 8.0, color: '#00a859' },
-    { label: 'BOM',          target: 7.0, color: '#65a30d' },
-    { label: 'REGULAR',      target: 6.0, color: '#d97706' },
-  ];
-
-  const progressPct = Math.min((ar / 8.4) * 100, 100);
-
-  let html = `<div style="font-size:10px; color:var(--text-dim); margin-bottom:4px; text-align:right">${refMonth} · AR atual: <strong style="color:white">${ar.toFixed(2)}</strong></div>`;
-
-  metas.forEach(m => {
-    const n = avsParaChegar(m.target);
-    const already = ar >= m.target;
-    const pct = already ? 100 : Math.min((ar / m.target) * 100, 99);
-    html += `
-      <div class="meta-item" style="--item-color:${m.color}">
-        <div class="meta-item-top">
-          <div class="meta-dot" style="--item-color:${m.color}"></div>
-          <span class="meta-label">${m.label}</span>
-          <span class="meta-count" style="--item-color:${m.color}">
-            ${already ? '✓ Atingido' : `+${n} av.`}
-          </span>
-        </div>
-        <div class="meta-bar-bg">
-          <div class="meta-bar-fill" style="width:${pct}%; --item-color:${m.color}; background:${m.color}"></div>
-        </div>
-        <div class="meta-sub">${already ? 'Meta já alcançada este mês' : `Avaliações perfeitas (Sim/Sim/10) para atingir AR ≥ ${m.target}`}</div>
-      </div>`;
-  });
-
-  container.innerHTML = html;
-}
-
-// ── MONTH TABS ───────────────────────────────────────────────────────────────
-function buildTabs() {
-  const container = document.getElementById('monthTabs');
-  container.innerHTML = '';
-  MONTHS.forEach(m => {
-    const btn = document.createElement('button');
-    const hasData = data[m] && data[m].qtd > 0;
-    btn.className = `month-tab ${!hasData ? 'no-data' : ''} ${m === activeMonthTab ? 'active' : ''}`;
-    btn.textContent = m.substring(0,3);
-    btn.title = hasData ? `${m}: AR ${data[m].ar?.toFixed(2)} (${data[m].qtd} av.)` : `${m}: sem dados`;
-    if (hasData) btn.onclick = () => selectMonth(m);
-    container.appendChild(btn);
-  });
-}
-
-function selectMonth(month) {
-  activeMonthTab = month;
-  buildTabs();
-  updateMetas();
-
-  const d = data[month];
-  if (!d || !d.qtd) {
-    document.getElementById('monthDetail').innerHTML = `
-      <div class="empty-state">
-        <div class="icon">📭</div>
-        <p>${month} ainda não tem dados inseridos</p>
-      </div>`;
-    return;
-  }
-
-  const repColor = REP_COLORS[d.rep] || '#475569';
-  const arPct = (d.ar / 10 * 100).toFixed(0);
-
-  // Referências de meta
-  const MA_META = 8;
-  const IS_META = 80;
-  const IN_META = 80;
-
-  // Efeito visual apenas a partir da 5ª avaliação
-  const mostrarAlerta = d.qtd >= 5;
-
-  function metaStyle(val, meta) {
-    if (!mostrarAlerta) return '';
-    const ok = val >= meta;
-    return ok
-      ? `border-color:rgba(0,168,89,0.3)`
-      : `border-color:rgba(220,38,38,0.5); background:rgba(220,38,38,0.07);`;
-  }
-
-  function metaTag(val, meta, label) {
-    if (!mostrarAlerta || val >= meta) return '';
-    return `<span style="display:inline-block;margin-top:5px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;background:rgba(220,38,38,0.2);color:#f87171;letter-spacing:0.5px;">⚠ Abaixo da meta (${label})</span>`;
-  }
-
-  function barColor(val, meta) {
-    if (!mostrarAlerta) return '#00a859';
-    return val >= meta ? '#00a859' : '#dc2626';
-  }
-
-  document.getElementById('monthDetail').innerHTML = `
-    <div class="detail-panel fade-in">
-      <div>
-        <div class="ar-circle" style="--rep-color:${repColor}">
-          <span class="ar-num">${d.ar.toFixed(2)}</span>
-          <span class="ar-label">AR</span>
-        </div>
-        <div style="margin-top:12px; text-align:center">
-          <span class="rep-badge-big" style="background:${repColor}; color:${['REGULAR','BOM'].includes(d.rep)?'#000':'#fff'}">${d.rep}</span>
-        </div>
-        <div style="margin-top:8px; text-align:center">
-          <button onclick="openModal('${month}')" style="background:var(--card2); border:1px solid var(--border); border-radius:6px; padding:6px 14px; color:var(--text-muted); font-size:11px; font-weight:600; cursor:pointer;">
-            ✏️ Editar
-          </button>
-        </div>
-      </div>
-      <div class="metrics-grid">
-        <div class="metric-item">
-          <div class="metric-label">Qtd. Avaliações</div>
-          <div class="metric-value">${d.qtd}</div>
-          ${d.qtd < 10 ? `<span style="display:inline-block;margin-top:5px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;background:rgba(220,38,38,0.2);color:#f87171;">⚠ Mín. 10 para reputação</span>` : ''}
-        </div>
-        <div class="metric-item">
-          <div class="metric-label">IR — Índice Resposta</div>
-          <div class="metric-value">${d.ir}%</div>
-          <div class="metric-bar"><div class="metric-bar-fill" style="width:${d.ir}%; background:${d.ir>=50?'#00a859':'#dc2626'}"></div></div>
-        </div>
-        <div class="metric-item" style="${metaStyle(d.ma, MA_META)}">
-          <div class="metric-label">MA — Média Avaliações</div>
-          <div class="metric-value" style="color:${barColor(d.ma, MA_META)}">${d.ma.toFixed(2)}</div>
-          <div class="metric-bar"><div class="metric-bar-fill" style="width:${d.ma*10}%; background:${barColor(d.ma, MA_META)}"></div></div>
-          ${metaTag(d.ma, MA_META, 'MA ≥ 8')}
-        </div>
-        <div class="metric-item" style="${metaStyle(d.is, IS_META)}">
-          <div class="metric-label">IS — Índice Solução</div>
-          <div class="metric-value" style="color:${barColor(d.is, IS_META)}">${d.is.toFixed(1)}%</div>
-          <div class="metric-bar"><div class="metric-bar-fill" style="width:${d.is}%; background:${barColor(d.is, IS_META)}"></div></div>
-          ${metaTag(d.is, IS_META, 'IS ≥ 80%')}
-        </div>
-        <div class="metric-item" style="${metaStyle(d.in, IN_META)}">
-          <div class="metric-label">IN — Novos Negócios</div>
-          <div class="metric-value" style="color:${barColor(d.in, IN_META)}">${d.in.toFixed(1)}%</div>
-          <div class="metric-bar"><div class="metric-bar-fill" style="width:${d.in}%; background:${barColor(d.in, IN_META)}"></div></div>
-          ${metaTag(d.in, IN_META, 'IN ≥ 80%')}
-        </div>
-        <div class="metric-item" style="border-color:${repColor}">
-          <div class="metric-label">AR — Avaliação RA</div>
-          <div class="metric-value" style="color:${repColor}">${d.ar.toFixed(2)}</div>
-          <div class="metric-bar"><div class="metric-bar-fill" style="width:${arPct}%; background:${repColor}"></div></div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function clearFilter() {
-  activeMonthTab = null;
-  buildTabs();
-  updateMetas();
-  document.getElementById('monthDetail').innerHTML = `
-    <div class="empty-state">
-      <div class="icon">📅</div>
-      <p>Selecione um mês acima para ver os detalhes</p>
-    </div>`;
-}
-
-function refresh(selMonth) {
-  buildChart();
-  buildTabs();
-  updateKPIs();
-  updateMetas();
-  if (selMonth) selectMonth(selMonth);
-}
-
-// ── IDs PARA REENVIO ──────────────────────────────────────────────────────────
+// Modificar addId para sincronizar
 function addId() {
   const input = document.getElementById('idInput');
   const val = input.value.trim();
   if (!val) return;
 
-  // Aceita múltiplos IDs separados por vírgula, espaço ou quebra de linha
   const parts = val.split(/[\s,;\n]+/).map(s => s.trim()).filter(Boolean);
   const now = new Date().toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit' });
 
@@ -1982,16 +1535,19 @@ function addId() {
   });
 
   localStorage.setItem('ra_ids_v2', JSON.stringify(ids));
+  syncToGoogleSheets(); // Sincronizar com Sheets
+  
   input.value = '';
   renderIds();
 }
 
+// Modificar toggleIdStatus para sincronizar
 function toggleIdStatus(idx) {
-  // Mover para reenviado (sem resultado ainda)
   ids[idx].status = 'reenviado';
   if (!ids[idx].resultado) ids[idx].resultado = null;
   localStorage.setItem('ra_ids_v2', JSON.stringify(ids));
-  // Abre painel de reenviados automaticamente
+  syncToGoogleSheets();
+  
   if (!verRenviados) {
     verRenviados = true;
     document.getElementById('reenviados-panel').style.display = 'block';
@@ -1999,150 +1555,39 @@ function toggleIdStatus(idx) {
   renderIds();
 }
 
+// Modificar setResultado
 function setResultado(idx, resultado) {
   ids[idx].resultado = resultado;
   localStorage.setItem('ra_ids_v2', JSON.stringify(ids));
+  syncToGoogleSheets();
   renderIds();
 }
 
-function voltarPendente(idx) {
-  ids[idx].status = 'pendente';
-  ids[idx].resultado = null;
-  localStorage.setItem('ra_ids_v2', JSON.stringify(ids));
-  renderIds();
-}
+// ── INICIALIZAÇÃO ──────────────────────────────────────────────────────────────
 
-function removeId(idx) {
-  ids.splice(idx, 1);
-  localStorage.setItem('ra_ids_v2', JSON.stringify(ids));
-  renderIds();
-}
-
-function copyId(id, btn) {
-  const doCopy = () => {
-    btn.textContent = '✓';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = '⎘';
-      btn.classList.remove('copied');
-    }, 1500);
-  };
-  navigator.clipboard.writeText(id).then(doCopy).catch(() => {
-    const ta = document.createElement('textarea');
-    ta.value = id;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    document.body.removeChild(ta);
-    doCopy();
-  });
-}
-
-let verRenviados = false;
-let idSearchTerm = '';
-
-function toggleVerRenviados() {
-  verRenviados = !verRenviados;
-  document.getElementById('reenviados-panel').style.display = verRenviados ? 'block' : 'none';
-  renderIds();
-}
-
-function filterIds(term) {
-  idSearchTerm = term.trim().toLowerCase();
-  const clearBtn = document.getElementById('idSearchClear');
-  if (clearBtn) clearBtn.style.display = idSearchTerm ? 'block' : 'none';
-  renderIds();
-}
-
-function clearSearch() {
-  idSearchTerm = '';
-  const inp = document.getElementById('idSearch');
-  if (inp) inp.value = '';
-  const clearBtn = document.getElementById('idSearchClear');
-  if (clearBtn) clearBtn.style.display = 'none';
-  renderIds();
-}
-
-function renderIds() {
-  const list     = document.getElementById('idList');
-  const renvList = document.getElementById('reenviados-list');
-
-  const pendentes  = ids.filter(i => i.status === 'pendente');
-  const reenviados = ids.filter(i => i.status === 'reenviado');
-  const positivos  = reenviados.filter(i => i.resultado === 'positivo');
-  const negativos  = reenviados.filter(i => i.resultado === 'negativo');
-
-  // Contadores
-  document.getElementById('ids-total').textContent     = ids.length;
-  document.getElementById('ids-pendente').textContent  = pendentes.length;
-  document.getElementById('ids-reenviado').textContent = reenviados.length;
-  document.getElementById('qtd-renv').textContent      = reenviados.length;
-  const qtdPos = document.getElementById('qtd-pos');
-  const qtdNeg = document.getElementById('qtd-neg');
-  if (qtdPos) qtdPos.textContent = positivos.length;
-  if (qtdNeg) qtdNeg.textContent = negativos.length;
-
-  // ── Lista principal: pendentes (filtrada por busca) ──
-  const pendFiltrados = idSearchTerm
-    ? pendentes.filter(i => i.id.toLowerCase().includes(idSearchTerm))
-    : pendentes;
-
-  if (pendFiltrados.length === 0) {
-    list.innerHTML = idSearchTerm
-      ? `<div class="ids-empty">Nenhum ID pendente com "${idSearchTerm}"</div>`
-      : '<div class="ids-empty">Nenhum ID pendente 🎉</div>';
-  } else {
-    list.innerHTML = '';
-    pendFiltrados.forEach(item => {
-      const origIdx = ids.indexOf(item);
-      const div = document.createElement('div');
-      div.className = 'id-item';
-      div.innerHTML = `
-        <span class="id-num">#${origIdx + 1}</span>
-        <button class="id-copy" onclick="copyId('${item.id}', this)" title="Copiar ID">⎘</button>
-        <span class="id-code">${item.id}</span>
-        <span class="id-date">${item.date}</span>
-        <span class="id-status pendente" onclick="toggleIdStatus(${origIdx})" title="Clique para marcar como reenviado">⏳ Pendente</span>
-        <button class="id-del" onclick="removeId(${origIdx})" title="Remover">✕</button>`;
-      list.appendChild(div);
-    });
+// Carregar dados ao iniciar
+async function init() {
+  // Tentar carregar do Google Sheets primeiro
+  const loaded = await loadFromGoogleSheets();
+  
+  // Se falhou, carregar do localStorage
+  if (!loaded) {
+    data = JSON.parse(localStorage.getItem('ra_dashboard_v2') || '{}');
+    ids = JSON.parse(localStorage.getItem('ra_ids_v2') || '[]');
   }
-
-  // ── Painel de reenviados ──
-  if (!renvList) return;
-
-  const renvFiltrados = idSearchTerm
-    ? reenviados.filter(i => i.id.toLowerCase().includes(idSearchTerm))
-    : reenviados;
-
-  if (renvFiltrados.length === 0) {
-    renvList.innerHTML = idSearchTerm
-      ? `<div class="ids-empty">Nenhum reenviado com "${idSearchTerm}"</div>`
-      : '<div class="ids-empty">Nenhum ID reenviado ainda.</div>';
-  } else {
-    renvList.innerHTML = '';
-    renvFiltrados.forEach(item => {
-      const origIdx = ids.indexOf(item);
-      const isPosAtivo = item.resultado === 'positivo';
-      const isNegAtivo = item.resultado === 'negativo';
-      const borderCol = isPosAtivo ? 'rgba(0,168,89,0.35)' : isNegAtivo ? 'rgba(220,38,38,0.35)' : 'rgba(46,50,82,0.8)';
-      const div = document.createElement('div');
-      div.className = 'id-item';
-      div.style.borderColor = borderCol;
-      div.innerHTML = `
-        <span class="id-num">#${origIdx + 1}</span>
-        <button class="id-copy" onclick="copyId('${item.id}', this)" title="Copiar ID">⎘</button>
-        <span class="id-code">${item.id}</span>
-        <span class="id-date">${item.date}</span>
-        <div class="av-result-btns">
-          <button class="btn-av-pos ${isPosAtivo ? 'ativo' : ''}" onclick="setResultado(${origIdx},'positivo')" title="Avaliado positivo">👍 Positivo</button>
-          <button class="btn-av-neg ${isNegAtivo ? 'ativo' : ''}" onclick="setResultado(${origIdx},'negativo')" title="Avaliado negativo">👎 Negativo</button>
-        </div>
-        <button style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:10px;padding:3px 6px;border-radius:4px;transition:all 0.15s;" onmouseover="this.style.color='#f87171'" onmouseout="this.style.color='var(--text-dim)'" onclick="voltarPendente(${origIdx})" title="Voltar para pendente">↩</button>
-        <button class="id-del" onclick="removeId(${origIdx})" title="Remover">✕</button>`;
-      renvList.appendChild(div);
-    });
-  }
+  
+  // Inicializar UI
+  buildNotaBtns();
+  buildChart();
+  buildTabs();
+  updateKPIs();
+  updateMetas();
+  renderIds();
+  
+  // Sincronizar automaticamente a cada 5 minutos
+  setInterval(() => {
+    syncToGoogleSheets();
+  }, 300000);
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
